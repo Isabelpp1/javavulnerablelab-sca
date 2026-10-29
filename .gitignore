@@ -1,0 +1,15 @@
+mysql-data/
+target/
+*.war
+*.class
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Reportes locales de SCA (Dependency-Check / CycloneDX)
+reportes/
+dependency-check-report.*
+*.sarif
+bom.json
+bom.xml
