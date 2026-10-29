@@ -1,0 +1,78 @@
+name: SCA - OWASP Dependency-Check                      # Nombre del workflow que aparece en la pestaña Actions
+
+on:                                                    # Eventos que disparan el pipeline
+  push:                                                # Se ejecuta al hacer push...
+    branches: [ main ]                                 # ...únicamente a la rama main
+  pull_request:                                        # Se ejecuta al abrir/actualizar un Pull Request...
+    branches: [ main ]                                 # ...cuyo destino es la rama main
+  workflow_dispatch:                                   # Permite ejecutarlo manualmente desde la pestaña Actions
+
+permissions:                                           # Permisos mínimos del GITHUB_TOKEN (principio de mínimo privilegio)
+  contents: read                                       # Solo lectura del código del repositorio
+  security-events: write                               # Escritura en Security > Code scanning para subir el SARIF
+
+jobs:                                                  # Lista de trabajos del pipeline
+  dependency-check:                                    # Identificador del trabajo de SCA
+    name: Análisis SCA con Dependency-Check            # Nombre visible del trabajo
+    runs-on: ubuntu-latest                             # Máquina virtual Linux (ya trae Maven instalado)
+
+    steps:                                             # Pasos que se ejecutan en orden
+      - name: Descargar el código                      # Paso 1: obtener el código fuente
+        uses: actions/checkout@v4                      # Acción oficial que clona el repositorio en el runner
+
+      - name: Preparar Java 17                         # Paso 2: instalar el JDK que usan Maven y Dependency-Check
+        uses: actions/setup-java@v4                    # Acción oficial para instalar Java
+        with:                                          # Parámetros de la acción
+          distribution: temurin                        # Distribución Eclipse Temurin (OpenJDK)
+          java-version: '17'                           # Versión 17 del JDK
+
+      - name: Restaurar caché de la base del NVD       # Paso 3: reutilizar la base de vulnerabilidades ya descargada
+        uses: actions/cache@v4                         # Acción oficial de caché de GitHub
+        with:                                          # Parámetros de la acción
+          path: ~/.m2/repository/org/owasp/            # Carpeta donde el plugin guarda la base del NVD (y el propio plugin)
+          key: dependency-check-${{ runner.os }}-${{ github.run_id }}  # Clave única por ejecución para guardar la base actualizada
+          restore-keys: dependency-check-${{ runner.os }}-  # Si no hay coincidencia exacta, restaura la caché más reciente
+
+      - name: Ejecutar Dependency-Check                # Paso 4: analizar las dependencias del pom.xml
+        env:                                           # Variables de entorno solo para este paso
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}      # Clave del NVD tomada del secreto del repositorio (nunca en texto plano)
+        run: mvn -B org.owasp:dependency-check-maven:13.0.0:check -Dformat=ALL -DnvdApiKey="$NVD_API_KEY" -DossindexAnalyzerEnabled=false -DfailBuildOnCVSS=11  # Genera HTML, XML, JSON y SARIF; umbral 11 = reporta sin romper el build (usar 7 para bloquear High/Critical)
+
+      - name: Subir SARIF a Security > Code scanning   # Paso 5: publicar los hallazgos en GitHub
+        if: always()                                   # Se ejecuta siempre, aunque un paso anterior haya fallado
+        uses: github/codeql-action/upload-sarif@v4     # Acción oficial de GitHub para cargar archivos SARIF de cualquier herramienta
+        with:                                          # Parámetros de la acción
+          sarif_file: target/dependency-check-report.sarif  # Ruta del SARIF generado por Dependency-Check
+          category: dependency-check                   # Categoría para identificar este análisis en Code scanning
+
+      - name: Guardar reportes HTML y XML              # Paso 6: dejar los reportes descargables en la ejecución
+        if: always()                                   # Se ejecuta siempre para no perder los reportes
+        uses: actions/upload-artifact@v4               # Acción oficial para subir artefactos
+        with:                                          # Parámetros de la acción
+          name: dependency-check-report                # Nombre del artefacto en el resumen de la ejecución
+          path: target/dependency-check-report.*       # Adjunta los reportes HTML y XML (y también JSON y SARIF)
+          retention-days: 30                           # Días que GitHub conserva el artefacto
+
+  sbom:                                                # Identificador del segundo trabajo (puntos extra)
+    name: Generar SBOM CycloneDX                       # Nombre visible del trabajo
+    runs-on: ubuntu-latest                             # Máquina virtual Linux donde se ejecuta
+
+    steps:                                             # Pasos que se ejecutan en orden
+      - name: Descargar el código                      # Paso 1: obtener el código fuente
+        uses: actions/checkout@v4                      # Acción oficial que clona el repositorio en el runner
+
+      - name: Preparar Java 17                         # Paso 2: instalar el JDK que usa Maven
+        uses: actions/setup-java@v4                    # Acción oficial para instalar Java
+        with:                                          # Parámetros de la acción
+          distribution: temurin                        # Distribución Eclipse Temurin (OpenJDK)
+          java-version: '17'                           # Versión 17 del JDK
+
+      - name: Generar SBOM con CycloneDX               # Paso 3: crear el inventario de componentes (directos y transitivos)
+        run: mvn -B org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeAggregateBom -DoutputFormat=json  # Produce target/bom.json
+
+      - name: Guardar SBOM como artefacto              # Paso 4: dejar el SBOM descargable
+        uses: actions/upload-artifact@v4               # Acción oficial para subir artefactos
+        with:                                          # Parámetros de la acción
+          name: sbom-cyclonedx                         # Nombre del artefacto en el resumen de la ejecución
+          path: target/bom.json                        # Archivo SBOM generado
+          retention-days: 30                           # Días que GitHub conserva el artefacto
